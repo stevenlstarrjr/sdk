@@ -1,0 +1,117 @@
+cmake_minimum_required(VERSION 3.20)
+project(wayland_gpu_example)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Resolve repo root and add graphics modules
+get_filename_component(HULTRIX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+# Lab CPU graphics2d (HGpuSurface, HCanvas, etc.)
+add_subdirectory(${HULTRIX_ROOT}/projects/lab/graphics2d ${CMAKE_CURRENT_BINARY_DIR}/graphics2d_lab_build)
+# Skia wrapper graphics2d (Ht::HGraphics2D). When this module is
+# built standalone, we add the subdirectory; when it is pulled in
+# from the root, graphics2d already exists.
+if(NOT TARGET graphics2d)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../graphics2d ${CMAKE_CURRENT_BINARY_DIR}/graphics2d_skia_build)
+endif()
+
+# Find required packages
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
+pkg_check_modules(WAYLAND_CURSOR REQUIRED wayland-cursor)
+find_package(Vulkan REQUIRED)
+
+# Get the wayland-protocols directory
+# Try to find it via pkg-config first, fallback to common locations
+execute_process(
+    COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=pkgdatadir wayland-protocols
+    OUTPUT_VARIABLE WAYLAND_PROTOCOLS_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+
+# Fallback to common locations if pkg-config doesn't work
+if(NOT WAYLAND_PROTOCOLS_DIR)
+    set(WAYLAND_PROTOCOLS_SEARCH_PATHS
+        /usr/share/wayland-protocols
+        /usr/local/share/wayland-protocols
+    )
+    foreach(path ${WAYLAND_PROTOCOLS_SEARCH_PATHS})
+        if(EXISTS "${path}/stable/xdg-shell/xdg-shell.xml")
+            set(WAYLAND_PROTOCOLS_DIR ${path})
+            break()
+        endif()
+    endforeach()
+endif()
+
+if(NOT WAYLAND_PROTOCOLS_DIR)
+    message(FATAL_ERROR "Could not find wayland-protocols directory")
+endif()
+
+message(STATUS "Found wayland-protocols: ${WAYLAND_PROTOCOLS_DIR}")
+
+# Generate xdg-shell protocol files
+set(XDG_SHELL_PROTOCOL "${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml")
+set(XDG_SHELL_HEADER "${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h")
+set(XDG_SHELL_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c")
+
+find_program(WAYLAND_SCANNER wayland-scanner REQUIRED)
+
+add_custom_command(
+    OUTPUT ${XDG_SHELL_HEADER}
+    COMMAND ${WAYLAND_SCANNER} client-header ${XDG_SHELL_PROTOCOL} ${XDG_SHELL_HEADER}
+    DEPENDS ${XDG_SHELL_PROTOCOL}
+    COMMENT "Generating xdg-shell client header"
+)
+
+add_custom_command(
+    OUTPUT ${XDG_SHELL_SOURCE}
+    COMMAND ${WAYLAND_SCANNER} private-code ${XDG_SHELL_PROTOCOL} ${XDG_SHELL_SOURCE}
+    DEPENDS ${XDG_SHELL_PROTOCOL}
+    COMMENT "Generating xdg-shell protocol code"
+)
+
+# Create a custom target for generated protocol files
+add_custom_target(wayland_protocols_generated
+    DEPENDS ${XDG_SHELL_HEADER} ${XDG_SHELL_SOURCE}
+)
+
+# Create executable
+add_executable(example_wayland_gpu
+    example/example1.cpp
+    src/HWaylandState.cpp
+    src/HGuiApplication.cpp
+    src/HLayout.cpp
+    src/HVulkanWaylandContext.cpp
+    src/HWindow.cpp
+    src/HScreen.cpp
+    src/HInputSeat.cpp
+    src/HPointer.cpp
+    src/HKeyboard.cpp
+    ${XDG_SHELL_SOURCE}
+)
+
+# Make sure protocols are generated before compiling
+add_dependencies(example_wayland_gpu wayland_protocols_generated)
+
+target_include_directories(example_wayland_gpu PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../graphics2d/include
+    ${HULTRIX_ROOT}/thirdparty/include
+    ${HULTRIX_ROOT}/projects/lab/graphics2d/include
+    ${WAYLAND_CLIENT_INCLUDE_DIRS}
+    ${WAYLAND_CURSOR_INCLUDE_DIRS}
+    ${Vulkan_INCLUDE_DIRS}
+)
+
+target_link_libraries(example_wayland_gpu
+    graphics2d_lab
+    graphics2d
+    ${HULTRIX_ROOT}/thirdparty/lib64/libyogacore.a
+    ${WAYLAND_CLIENT_LIBRARIES}
+    ${WAYLAND_CURSOR_LIBRARIES}
+)
+
+# The Vulkan shaders used by the GPU backend need to be available at runtime.

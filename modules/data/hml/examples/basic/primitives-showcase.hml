@@ -1,0 +1,241 @@
+/*
+ * Copyright 2024 HML Project Contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Showcase of all 6 HML primitives
+
+var title: string = "HML Primitives Showcase"
+var primaryColor: string = "#007acc"
+
+Window {
+    title: ${title}
+    width: 800
+    height: 600
+    
+    HLayout {
+        direction: "column"
+        spacing: 20
+        padding: 20
+        
+        // Title
+        HText {
+            text: ${title}
+            fontSize: 24
+            weight: "bold"
+            color: "#333"
+            align: "center"
+        }
+        
+        // Primitive demonstrations
+        HLayout {
+            direction: "row"
+            spacing: 30
+            
+            // Left column
+            HLayout {
+                direction: "column"
+                spacing: 20
+                
+                // 1. HMouseArea demo
+                HLayout {
+                    direction: "column"
+                    spacing: 5
+                    
+                    HText {
+                        text: "1. HMouseArea"
+                        fontSize: 16
+                        weight: "bold"
+                    }
+                    
+                    HMouseArea {
+                        signal customClick(button: string)
+                        
+                        width: 200
+                        height: 60
+                        
+                        HShape {
+                            background: ${primaryColor}
+                            borderRadius: 8
+                        }
+                        
+                        HText {
+                            text: "Interactive Area"
+                            color: "white"
+                            align: "center"
+                        }
+                        
+                        onCustomClick: `console.log("Clicked with", button);`
+                        onClick: `console.log("HMouseArea clicked!");`
+                    }
+                }
+                
+                // 2. HShape demo
+                HLayout {
+                    direction: "column"
+                    spacing: 5
+                    
+                    HText {
+                        text: "2. HShape"
+                        fontSize: 16
+                        weight: "bold"
+                    }
+                    
+                    HShape {
+                        signal shapeChanged()
+                        
+                        width: 200
+                        height: 80
+                        background: "#ff6b6b"
+                        borderRadius: 15
+                        borderWidth: 3
+                        borderColor: "#ff5252"
+                        
+                        onShapeChanged: `console.log("Shape changed");`
+                    }
+                }
+                
+                // 3. HText demo
+                HLayout {
+                    direction: "column"
+                    spacing: 5
+                    
+                    HText {
+                        text: "3. HText"
+                        fontSize: 16
+                        weight: "bold"
+                    }
+                    
+                    HText {
+                        signal textUpdated()
+                        
+                        text: "Formatted Text Example"
+                        fontSize: 18
+                        color: "#4ecdc4"
+                        weight: "bold"
+                        style: "italic"
+                        
+                        onTextUpdated: `console.log("Text updated");`
+                    }
+                }
+            }
+            
+            // Right column
+            HLayout {
+                direction: "column"
+                spacing: 20
+                
+                // 4. HImage demo
+                HLayout {
+                    direction: "column"
+                    spacing: 5
+                    
+                    HText {
+                        text: "4. HImage"
+                        fontSize: 16
+                        weight: "bold"
+                    }
+                    
+                    HImage {
+                        signal imageLoaded()
+                        signal imageError(error: string)
+                        
+                        source: "placeholder.png"
+                        width: 150
+                        height: 100
+                        fillMode: "preserve-aspect"
+                        
+                        onImageLoaded: `console.log("Image loaded successfully");`
+                        onImageError: `console.log("Image failed:", error);`
+                    }
+                }
+                
+                // 5. HLayout demo
+                HLayout {
+                    direction: "column"
+                    spacing: 5
+                    
+                    HText {
+                        text: "5. HLayout"
+                        fontSize: 16
+                        weight: "bold"
+                    }
+                    
+                    HLayout {
+                        signal layoutChanged()
+                        
+                        direction: "row"
+                        spacing: 10
+                        padding: 10
+                        
+                        onLayoutChanged: `console.log("Layout updated");`
+                        
+                        HShape {
+                            width: 40
+                            height: 40
+                            background: "#ff9ff3"
+                            borderRadius: 20
+                        }
+                        
+                        HShape {
+                            width: 40
+                            height: 40
+                            background: "#54a0ff"
+                            borderRadius: 20
+                        }
+                        
+                        HShape {
+                            width: 40
+                            height: 40
+                            background: "#5f27cd"
+                            borderRadius: 20
+                        }
+                    }
+                }
+                
+                // 6. HCanvas demo
+                HLayout {
+                    direction: "column"
+                    spacing: 5
+                    
+                    HText {
+                        text: "6. HCanvas"
+                        fontSize: 16
+                        weight: "bold"
+                    }
+                    
+                    HCanvas {
+                        signal canvasPainted()
+                        signal canvasClicked(x: int, y: int)
+                        
+                        width: 200
+                        height: 100
+                        contextType: "2d"
+                        
+                        onCanvasPainted: `console.log("Canvas painted");`
+                        onCanvasClicked: `console.log("Canvas clicked at", x, y);`
+                    }
+                }
+            }
+        }
+        
+        // Footer
+        HText {
+            text: "All 6 primitives demonstrated above! 🎉"
+            fontSize: 14
+            color: "#666"
+            align: "center"
+        }
+    }
+}

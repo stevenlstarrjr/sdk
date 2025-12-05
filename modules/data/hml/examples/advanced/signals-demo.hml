@@ -1,0 +1,239 @@
+/*
+ * Copyright 2024 HML Project Contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// Advanced Signals and Events Demo
+
+var title: string = "Signals & Events Demo"
+var clickCount: int = 0
+
+Window {
+    title: ${title}
+    width: 600
+    height: 500
+    
+    // Global signals
+    signal appStarted()
+    signal userAction(action: string, data: any)
+    
+    HLayout {
+        direction: "column"
+        spacing: 20
+        padding: 20
+        
+        HText {
+            text: ${title}
+            fontSize: 24
+            weight: "bold"
+            align: "center"
+        }
+        
+        // Signal demonstration
+        HLayout {
+            direction: "row"
+            spacing: 20
+            
+            // Emitter component
+            HLayout {
+                direction: "column"
+                spacing: 10
+                
+                HText {
+                    text: "Signal Emitter"
+                    fontSize: 16
+                    weight: "bold"
+                }
+                
+                CustomButton {
+                    signal buttonClicked(count: int)
+                    signal buttonHovered()
+                    
+                    text: "Click Me!"
+                    clickCount: 0
+                    
+                    HMouseArea {
+                        width: 150
+                        height: 50
+                        
+                        HShape {
+                            background: "#007acc"
+                            borderRadius: 8
+                        }
+                        
+                        HText {
+                            text: "Clicked: ${parent.clickCount}"
+                            color: "white"
+                            align: "center"
+                        }
+                        
+                        onClick: `
+                            parent.clickCount++;
+                            parent.buttonClicked(parent.clickCount);
+                        `
+                        
+                        onEnter: `parent.buttonHovered();`
+                    }
+                    
+                    onButtonClicked: `
+                        console.log("Button clicked", count, "times");
+                        window.userAction("click", {count: count});
+                    `
+                    
+                    onButtonHovered: `
+                        console.log("Button hovered");
+                        window.userAction("hover", {});
+                    `
+                }
+            }
+            
+            // Receiver component
+            HLayout {
+                direction: "column"
+                spacing: 10
+                
+                HText {
+                    text: "Event Receiver"
+                    fontSize: 16
+                    weight: "bold"
+                }
+                
+                EventLogger {
+                    signal logAdded(message: string)
+                    
+                    var logs: any = []
+                    
+                    HLayout {
+                        direction: "column"
+                        spacing: 5
+                        
+                        HText {
+                            text: "Event Log:"
+                            fontSize: 14
+                            weight: "bold"
+                        }
+                        
+                        LogDisplay {
+                            width: 200
+                            height: 150
+                            
+                            HShape {
+                                background: "#f5f5f5"
+                                borderWidth: 1
+                                borderColor: "#ddd"
+                            }
+                            
+                            HText {
+                                text: "Events will appear here..."
+                                fontSize: 12
+                                color: "#666"
+                            }
+                        }
+                    }
+                    
+                    onLogAdded: `
+                        console.log("Log added:", message);
+                        this.logs.push(message);
+                    `
+                }
+            }
+        }
+        
+        // Global event handlers
+        onAppStarted: `
+            console.log("Application started!");
+            this.logEvent("App started");
+        `
+        
+        onUserAction: `
+            console.log("User action:", action, data);
+            this.logEvent("User " + action + ": " + JSON.stringify(data));
+        `
+        
+        // Status display
+        HLayout {
+            direction: "column"
+            spacing: 10
+            
+            HText {
+                text: "Status Information"
+                fontSize: 16
+                weight: "bold"
+            }
+            
+            StatusPanel {
+                signal statusUpdated(status: string)
+                
+                width: 400
+                height: 100
+                
+                HShape {
+                    background: "#e8f5e8"
+                    borderWidth: 1
+                    borderColor: "#4caf50"
+                    borderRadius: 5
+                }
+                
+                HLayout {
+                    direction: "column"
+                    spacing: 5
+                    padding: 10
+                    
+                    HText {
+                        text: "System Status: Ready"
+                        fontSize: 14
+                        color: "#2e7d32"
+                    }
+                    
+                    HText {
+                        text: "Events processed: ${clickCount}"
+                        fontSize: 12
+                        color: "#388e3c"
+                    }
+                    
+                    HText {
+                        text: "Last action: None"
+                        fontSize: 12
+                        color: "#4caf50"
+                    }
+                }
+                
+                onStatusUpdated: `
+                    console.log("Status updated:", status);
+                `
+            }
+        }
+        
+        // Footer instructions
+        HText {
+            text: "Click the button and watch the signals flow! Check the console for detailed logs."
+            fontSize: 12
+            color: "#666"
+            align: "center"
+        }
+    }
+    
+    // Initialize the app
+    script `
+        // Emit app started signal
+        this.appStarted();
+        
+        // Helper function for logging
+        this.logEvent = function(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logMessage = timestamp + ": " + message;
+            console.log("📝 " + logMessage);
+        };
+    `
+}
