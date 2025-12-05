@@ -922,4 +922,56 @@ void HPainter::drawPicture(const HPicture& picture, const HPointF& offset) {
     m_impl->canvas->restore();
 }
 
+// Image rendering
+void HPainter::drawImage(const HPoint& point, const HImage& image) {
+    drawImage(static_cast<float>(point.x()), static_cast<float>(point.y()), image);
+}
+
+void HPainter::drawImage(const HPointF& point, const HImage& image) {
+    drawImage(point.x(), point.y(), image);
+}
+
+void HPainter::drawImage(int x, int y, const HImage& image) {
+    drawImage(static_cast<float>(x), static_cast<float>(y), image);
+}
+
+void HPainter::drawImage(float x, float y, const HImage& image) {
+    if (!m_impl->canvas || image.isNull()) {
+        return;
+    }
+
+    const sk_sp<SkImage>& skImage = image.impl()->image;
+    if (!skImage) {
+        return;
+    }
+
+    // Use default sampling (bilinear filtering)
+    SkSamplingOptions sampling(SkFilterMode::kLinear);
+    m_impl->canvas->drawImage(skImage, x, y, sampling, nullptr);
+}
+
+void HPainter::drawImage(const HRect& target, const HImage& image) {
+    drawImage(target.toRectF(), image);
+}
+
+void HPainter::drawImage(const HRectF& target, const HImage& image) {
+    if (!m_impl->canvas || image.isNull()) {
+        return;
+    }
+
+    const sk_sp<SkImage>& skImage = image.impl()->image;
+    if (!skImage) {
+        return;
+    }
+
+    SkRect srcRect = SkRect::MakeWH(static_cast<float>(image.width()),
+                                     static_cast<float>(image.height()));
+    SkRect dstRect = SkRect::MakeXYWH(target.x(), target.y(), target.width(), target.height());
+
+    // Use default sampling (bilinear filtering)
+    SkSamplingOptions sampling(SkFilterMode::kLinear);
+    m_impl->canvas->drawImageRect(skImage, srcRect, dstRect, sampling, nullptr,
+                                   SkCanvas::kStrict_SrcRectConstraint);
+}
+
 } // namespace Ht
