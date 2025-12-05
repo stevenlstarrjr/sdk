@@ -1,0 +1,16 @@
+{
+  "name": "my-game-app",
+  "version": "1.0.0",
+  "mirror": "http://packages.hultrix.com",
+    "target_os": "linux",
+  "target_arch": "x64",
+  "build_type": "Release",
+  "deploy": {
+    "endpoint": "https://e42aaa309d5bfa1b345ca083e5e14b92.r2.cloudflarestorage.com",
+    "access_key": "2ce6615b087e30cc06774328d6e55d77",
+    "secret_key": "3b39a2799ab4eb353d4a3d9852507cfe3c74647d114395f3cc33868780ddb4dd"
+  },
+  "dependencies": [
+    { "name": "boost" }
+  ]
+}
