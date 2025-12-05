@@ -8,6 +8,7 @@ docs/
 !thirdparty/src/
 !thirdparty/src/**
 
+
 # Compiled Object files
 *.slo
 *.lo
