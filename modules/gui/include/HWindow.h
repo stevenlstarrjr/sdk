@@ -107,6 +107,7 @@ public:
 
     // Mouse event routing helpers (internal use by HApplication)
     static HMouseArea* findMouseAreaAt(HItem* rootItem, int x, int y);
+    static HItem* findItemAt(HItem* rootItem, int x, int y);
 
     // Internal access
     struct Impl;

@@ -1,159 +1,237 @@
-This is a great start. Your code is very clean and adheres nicely to the Qt/C++ style.
+Gotcha, you’re thinking like an object tree / XML layout. Nice.
 
-To answer your question: **"How do we properly handle items that contain other items, specifically allowing for both Layouts (automatic positioning) and Stacking (z-ordering/overlays) like QML?"**
+Let me rewrite your idea in that style, but wired the way you actually want it to behave.
 
-In QML, an `Item` can contain children. Some children might be managed by a `Row` or `Column`, while other children (like a "badge" or a "close button") float on top.
+------
 
-To achieve this in "plain C++" without the Qt Meta-Object system, you need to architect your Base Class (`HItem`) to treat **Layouts** and **Visual Items** as part of the same hierarchy.
+## 1. Structural tree: who owns what
 
-Here is the architectural approach to achieve the "QML Concept":
+Conceptually, one window looks like this:
 
-### 1\. The Core Architecture: The "Scene Graph" Approach
+```xml
+<HWindow>
+    <HWindowPrivate>
+        <HEventDispatcher />
 
-You need a base class (let's call it `HItem`) that everything inherits from (`HRectangle`, `HLayout`, `HText`, etc.).
+        <HRenderManager>      <!-- HGuiRenderer in code -->
+            <HSceneGraph>
+                <!-- nodes derived from the HItem tree -->
+                <HSceneNode item="Root"  state="default" />
+                <HSceneNode item="Button" state="hovered" />
+                <HSceneNode item="Label"  state="default" />
+            </HSceneGraph>
+        </HRenderManager>
+    </HWindowPrivate>
 
-**Crucial Design Rule:**
-
-  * **Every `HItem` has a list of children.**
-  * **Drawing Order = Z-Order.** If you draw the children in a loop from index `0` to `end`, the last item is drawn "on top."
-  * **Layouts are just Items.** An `HHBoxLayout` is just an `HItem` that calculates the `x,y,w,h` of its children.
-
-### 2\. How to Mix Layouts and Stacks
-
-To get the behavior you want (a layout *plus* things floating on top), you don't use `setCentralItem` (which implies only one child). Instead, you use a parenting system.
-
-Here is how you refactor your C++ structure to support this:
-
-#### The Base Class (`HItem`)
-
-This handles the "Stacking" logic automatically via the Painter's Algorithm.
-
-```cpp
-// HItem.h
-class HItem {
-public:
-    HItem(HItem* parent = nullptr) {
-        if (parent) parent->addChild(this);
-    }
-
-    virtual ~HItem() {
-        // Clean up children (Manual memory management preference)
-        for (auto* child : m_children) delete child; 
-    }
-
-    void addChild(HItem* child) {
-        m_children.push_back(child);
-        child->m_parent = this;
-        // Trigger a layout update if this item is a layout
-    }
-
-    // The "Stacking" Magic happens here
-    virtual void paint(Painter& p) {
-        // 1. Draw self (background, etc.)
-        onPaint(p); 
-
-        // 2. Draw children in order (Last one added is on top!)
-        for (auto* child : m_children) {
-            if (child->isVisible()) {
-                p.save();
-                p.translate(child->x(), child->y()); // Relative coordinates
-                child->paint(p);
-                p.restore();
-            }
-        }
-    }
-
-    // Layouts override this to move children around
-    virtual void updateLayout() {} 
-
-protected:
-    std::vector<HItem*> m_children;
-    HItem* m_parent = nullptr;
-    int m_x = 0, m_y = 0, m_width = 0, m_height = 0;
-};
+    <!-- This is the *logical* UI tree the user manipulates -->
+    <HItemTree>
+        <HItem id="root">
+            <HItem type="Rectangle" id="background" state="default">
+                <HItem type="Text" id="label" state="default" />
+                <HItem type="Button" id="okButton" state="hovered" />
+            </HItem>
+        </HItem>
+    </HItemTree>
+</HWindow>
 ```
 
-### 3\. The Implementation Example
+So in short:
 
-Here is how you would write your `main.cpp` to have a **Layout** (the columns) but also a **floating Overlay** (Stacking) on top of it, just like QML.
+- `HWindow` has:
+  - **content item tree** (`HItem` and children),
+  - **internals** (`HEventDispatcher`, `HRenderManager`, `HSceneGraph`).
 
-```cpp
-#include <HApplication.h>
-#include <HWindow.h>
-#include <HBoxLayout.h>
-#include <HRectangle.h>
-#include <HColor.h>
-#include <HText.h> // Imaginary text class
+------
 
-using namespace Ht;
+## 2. How events should flow (important bit)
 
-int main(int argc, char** argv) {
-    HApplication app(argc, argv);
+You suggested:
 
-    HWindow window(&app);
-    window.setTitle("Layout vs Stack Example");
-    window.resize(1000, 600);
+> hevent tells rendermanager a event happens and where and the render manager decides what to do about it.
 
-    // 1. The Container (Acts like a QML Item or Rectangle)
-    auto* backgroundRect = new HRectangle(HColor(240, 240, 240)); 
-    window.setCentralItem(backgroundRect);
+I’d strongly recommend this variant instead:
 
-    // ---------------------------------------------------------
-    // LAYER 1: The Layout (The content behind)
-    // ---------------------------------------------------------
-    // We parent the layout to the backgroundRect
-    auto* rootLayout = new HHBoxLayout(backgroundRect); 
-    
-    // Make the layout fill the background (simple anchoring logic)
-    rootLayout->fillParent(); 
-    rootLayout->setSpacing(40);
-    rootLayout->setContentsMargins(20);
-
-    // Add your panels (same as your code)
-    auto* leftPanel = new HVBoxLayout();
-    leftPanel->addWidget(new HRectangle(HColor(255, 100, 100)), 1); 
-    
-    auto* rightPanel = new HVBoxLayout();
-    rightPanel->addWidget(new HRectangle(HColor(255, 255, 100)), 1); 
-
-    rootLayout->addWidget(leftPanel, 1);
-    rootLayout->addWidget(rightPanel, 1);
-
-    // ---------------------------------------------------------
-    // LAYER 2: The "Stack" (Floating Overlay)
-    // ---------------------------------------------------------
-    // In QML, you would just add this Item after the Layout.
-    // Because we add this to 'backgroundRect' AFTER 'rootLayout', 
-    // it will draw ON TOP of the layout.
-    
-    auto* floatingBadge = new HRectangle(HColor(0, 0, 0, 150)); // Semi-transparent black
-    floatingBadge->setParent(backgroundRect); // Parent is the same container!
-    
-    // Manual positioning (Absolute positioning like QML x/y)
-    // This ignores the Layout because it was not added via 'addWidget'
-    // but simply added as a child of the container.
-    floatingBadge->setGeometry(50, 50, 200, 50); 
-    
-    auto* overlayText = new HText("Floating Overlay");
-    overlayText->setParent(floatingBadge); // Child of the badge
-    overlayText->centerInParent();
-
-    window.show();
-    return app.exec();
-}
+```text
+HEvent
+  ──▶ HEventDispatcher
+         ──▶ HItem (changes its state)
+                 ──▶ mark “needs redraw”
+                        ──▶ HRenderManager redraws with new state
 ```
 
-### The Key Difference: `addWidget` vs `setParent`
+In XML-ish form:
 
-To make this work in your C++ SDK, you need to distinguish between two things:
+```xml
+<HEvent type="MousePress" x="50" y="20" />
 
-1.  **Logical Ownership (The Tree):** Every item needs a parent so `delete` works and events bubble up.
-2.  **Layout Management:** Only items added to a specific **Layout Object** get resized by that layout.
+<HWindow>
+    <HEventDispatcher>
+        <!-- 1) HEvent comes in here -->
+        <!-- 2) Hit-test on HItemTree to find target item -->
+        <TargetItem ref="okButton" />
+    </HEventDispatcher>
 
-**The Fix in your C++ Design:**
-Your `HRectangle` shouldn't just have `setCentralItem`. It should act like a generic container.
+    <HItemTree>
+        <HItem id="okButton" type="Button" state="default">
+            <!-- 3) okButton::mousePressEvent(e) runs -->
+            <!-- 4) It sets state="pressed" and asks for a repaint -->
+        </HItem>
+    </HItemTree>
 
-  * If you add a child via `layout->addWidget(item)`, the Layout controls the geometry (x, y, w, h).
-  * If you add a child via `item->setParent(container)`, the item controls its own geometry (x, y), allowing you to place it anywhere (top-left, centered, etc.), effectively creating a **Stack**.
+    <HRenderManager>
+        <!-- 5) Next frame, it sees “okButton” is dirty / state changed -->
+        <HSceneGraph>
+            <HSceneNode item="okButton" state="pressed" />
+        </HSceneGraph>
+        <!-- 6) Draws pressed visual -->
+    </HRenderManager>
+</HWindow>
+```
 
-Does this logic align with how you want to handle the memory management? I can explain how to handle the "Anchors" (like `anchors.right: parent.right`) in C++ if that's the next step.
+Why this split?
+
+- **EventDispatcher** = decides *who* should react.
+- **Items** = decide *what* happens to their state.
+- **RenderManager** = only cares about “what’s the current state, what’s dirty, render it”.
+
+If the render manager starts making behavioral decisions (“when clicked, run this animation, change models, route navigation”), it becomes a god-object fast and is hard to reason about.
+
+------
+
+## 3. Simple combined diagram (what you asked, but filled in)
+
+Here’s your original shape, but expanded:
+
+```xml
+<HWindow>
+    <!-- logical widget tree -->
+    <HItemTree>
+        <HItem id="root" type="RootItem" state="default">
+            <HItem id="background" type="Rectangle" state="default">
+                <HItem id="title" type="Text" state="default" />
+                <HItem id="okButton" type="Button" state="hovered" />
+            </HItem>
+        </HItem>
+    </HItemTree>
+
+    <!-- internals -->
+    <HEventDispatcher
+        rootItemRef="root"
+        focusItemRef="okButton"
+        hoverItemRef="okButton" />
+
+    <HRenderManager>
+        <HSceneGraph>
+            <HSceneNode id="rootNode"   item="root"      state="default" />
+            <HSceneNode id="bgNode"     item="background" state="default" />
+            <HSceneNode id="titleNode"  item="title"     state="default" />
+            <HSceneNode id="buttonNode" item="okButton"  state="hovered" />
+        </HSceneGraph>
+    </HRenderManager>
+</HWindow>
+```
+
+**Event story in one line:**
+
+```text
+HEvent → HEventDispatcher → HItem (state change) → HRenderManager redraws scenegraph
+```
+
+If you’d like, I can now turn this into concrete C++ class skeletons:
+
+- `HEventDispatcher` API,
+
+- `HRenderManager` / `HGuiRenderer`,
+
+- and an `HItem::setState(HItemState)` / dirty-flag pattern to match the `<state="...">` idea.
+
+  
+
+  
+  
+
+Short answer: **yeah, this is exactly the direction you should go** – with a couple of important rules about *who* owns logic.
+
+Let me lock it in clearly so you can implement it without second-guessing.
+
+------
+
+## 1. Yes: this is the right high-level shape
+
+Conceptually, per window:
+
+```xml
+<HWindow>
+    <HItemTree>          <!-- logical widgets -->
+        <HItem id="root">
+            <HItem id="button" state="default" />
+        </HItem>
+    </HItemTree>
+
+    <HEventDispatcher /> <!-- routes events to items -->
+
+    <HRenderManager>     <!-- draws things, no app logic here -->
+        <HSceneGraph>
+            <HSceneNode item="root"   state="default" />
+            <HSceneNode item="button" state="hovered" />
+        </HSceneGraph>
+    </HRenderManager>
+</HWindow>
+```
+
+Event flow:
+
+```text
+HEvent  →  HEventDispatcher  →  HItem (changes state/props)  →  HRenderManager redraws
+```
+
+That’s a clean, Qt-Quick-style model. 👍
+
+------
+
+## 2. The 3 rules I’d follow
+
+If you just remember these, you’ll be fine:
+
+1. **`HWindow` owns everything per window**
+   - One `contentItem` root (`HItem*`).
+   - One `HEventDispatcher`.
+   - One `HSceneGraph`.
+   - One `HRenderManager`/`HGuiRenderer`.
+2. **Items own state, dispatcher just routes**
+   - `HEventDispatcher` only decides *which item* gets the event.
+   - `HItem` subclasses decide what to do: change `state`, change properties, start animations, etc.
+   - No behavior decisions in `HRenderManager`.
+3. **RenderManager only renders**
+   - Looks at `HSceneGraph`, dirty flags, item state.
+   - Issues draw calls to `graphics2d`/Vulkan/GLES.
+   - Knows nothing about input, business logic, navigation.
+
+If you stick to that separation, the design will stay sane as it grows.
+
+------
+
+## 3. Concrete “do this next” checklist
+
+If you want an immediate actionable plan:
+
+1. **In `modules/gui/include`:**
+   - `HWindow.h`
+   - `HItem.h`
+   - `HEvent.h`, `HMouseEvent.h`, `HKeyEvent.h`
+2. **In `modules/gui/private`:**
+   - `HWindow_p.h` (`HWindowPrivate` with:
+     - `HItem* contentItem;`
+     - `std::unique_ptr<HEventDispatcher>;`
+     - `std::unique_ptr<HSceneGraph>;`
+     - `std::unique_ptr<HGuiRenderer>;`)
+   - `HEventDispatcher.h`
+   - `HSceneGraph.h` / `HSceneNode.h`
+   - `HGuiRenderer.h`
+3. **Implement a minimal slice:**
+   - One window.
+   - One `HRectangle` item as `contentItem`.
+   - Mouse click -> change a `state` or `color`.
+   - Renderer just draws a solid rect with different color when `state == pressed`.
+
+If you want, I can write those skeleton headers exactly how they’d live in your `modules/gui` tree so you can just drop them into the repo and start filling in the guts.

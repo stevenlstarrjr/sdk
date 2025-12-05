@@ -127,6 +127,11 @@ add_library(hultrix_gui
     src/HText.cpp
     src/HImageItem.cpp
     src/HMouseArea.cpp
+    # Managers
+    src/HSceneGraph.cpp
+    src/HRenderManager.cpp
+    src/HStateManager.cpp
+    src/HEventDispatcher.cpp
 )
 
 target_include_directories(hultrix_gui

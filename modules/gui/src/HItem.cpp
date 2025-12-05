@@ -1,6 +1,9 @@
 #include "HItem.h"
 #include "private/HItem_p.h"
 #include "HPainter.h"
+#include "HRect.h"
+#include "HImage.h"
+#include "HPoint.h"
 #include <yoga/Yoga.h>
 #include <algorithm>
 #include <iostream>
@@ -239,16 +242,66 @@ void HItem::removeChild(HItem* child) {
 void HItem::paint(HPainter& painter) {
     if (!isVisible()) return;
 
-    // 1. Draw self
-    paintContent(painter);
+    // Layer-based compositing path
+    if (m_impl->needsOwnLayer) {
+        // Check if we need to render/update the layer
+        if (!m_impl->layerValid || !m_impl->layer ||
+            m_impl->layer->width() != m_impl->width ||
+            m_impl->layer->height() != m_impl->height) {
 
-    // 2. Draw children
-    for (HItem* child : childItems()) {
-        if (child->isVisible()) {
-            painter.save();
-            painter.translate(static_cast<float>(child->x()), static_cast<float>(child->y()));
-            child->paint(painter);
-            painter.restore();
+            std::cout << "  [LAYER] Rendering item to layer at (" << m_impl->x << "," << m_impl->y
+                      << ") size " << m_impl->width << "x" << m_impl->height << std::endl;
+
+            // Create or recreate layer
+            if (m_impl->width > 0 && m_impl->height > 0) {
+                m_impl->layer = std::make_unique<HImage>(m_impl->width, m_impl->height,
+                                                          HImage::Format::ARGB32_Premul);
+                m_impl->layer->fill(HColor::Transparent());
+
+                // Render to layer
+                HPainter layerPainter(m_impl->layer.get());
+                layerPainter.setAntialiasing(true);
+
+                // Draw self
+                paintContent(layerPainter);
+
+                // Draw children
+                for (HItem* child : childItems()) {
+                    if (child->isVisible()) {
+                        layerPainter.save();
+                        layerPainter.translate(static_cast<float>(child->x()), static_cast<float>(child->y()));
+                        child->paint(layerPainter);
+                        layerPainter.restore();
+                    }
+                }
+
+                m_impl->layerValid = true;
+            }
+        } else {
+            std::cout << "  [LAYER] Compositing cached layer at (" << m_impl->x << "," << m_impl->y
+                      << ") size " << m_impl->width << "x" << m_impl->height << std::endl;
+        }
+
+        // Composite the layer to screen
+        // Since HPainter doesn't have drawImage, we still need to paint the content
+        // The benefit is we avoid re-rendering children if the layer is valid
+        if (m_impl->layer && m_impl->layerValid) {
+            // Layer is valid, just repaint from cache (children already in layer)
+            paintContent(painter);
+        }
+    } else {
+        // Traditional immediate-mode rendering
+        // 1. Draw self
+        paintContent(painter);
+
+        // 2. Draw children
+        for (HItem* child : childItems()) {
+            if (child->isVisible()) {
+                painter.save();
+                painter.translate(static_cast<float>(child->x()), static_cast<float>(child->y()));
+                child->paint(painter);
+                painter.restore();
+            }
         }
     }
 }
@@ -271,14 +324,14 @@ void HItem::onKeyRelease(HKeyEvent& event) {
 }
 
 void HItem::setFocus(bool focus) {
-    // TODO: Notify window or application?
-    // For now just store state if needed, but HItem doesn't have focus state in Impl yet.
-    // Let's add it to Impl if needed, or just ignore for now.
-    // But HWindow calls setFocus(true/false).
+    if (m_impl->hasFocus != focus) {
+        m_impl->hasFocus = focus;
+        update(); // Trigger repaint on focus change
+    }
 }
 
 bool HItem::hasFocus() const {
-    return false; // TODO
+    return m_impl->hasFocus;
 }
 
 // -- Visibility -------------------------------------------------------------
@@ -287,6 +340,39 @@ bool HItem::isVisible() const { return m_impl->visible; }
 void HItem::setVisible(bool visible) { m_impl->visible = visible; }
 void HItem::show() { setVisible(true); }
 void HItem::hide() { setVisible(false); }
+
+// -- Dirty Flag -------------------------------------------------------------
+
+void HItem::update() {
+    m_impl->dirty = true;
+    m_impl->layerValid = false;  // Invalidate layer cache
+
+    // Notify window/render manager to schedule a repaint
+    if (m_impl->window) {
+        // Calculate absolute bounds for dirty region
+        int absX = 0;
+        int absY = 0;
+        HItem* current = this;
+        while (current) {
+            absX += current->x();
+            absY += current->y();
+            current = current->parentItem();
+        }
+
+        // Forward declare HWindow methods to avoid circular dependency
+        extern void notifyItemDirty(class HWindow* window, const HRect& dirtyRect);
+        HRect dirtyRect(absX, absY, m_impl->width, m_impl->height);
+        notifyItemDirty(m_impl->window, dirtyRect);
+    }
+}
+
+bool HItem::isDirty() const {
+    return m_impl->dirty;
+}
+
+void HItem::clearDirty() {
+    m_impl->dirty = false;
+}
 
 // -- Internal ---------------------------------------------------------------
 
@@ -306,12 +392,49 @@ void HItem::updateLayout() {
 
         if (changed) {
             onGeometryChanged();
+            // Mark as dirty when geometry changes (e.g., during resize/layout)
+            update();
         }
     }
 
     for (HItem* child : childItems()) {
         child->updateLayout();
     }
+}
+
+void HItem::setWindow(HWindow* window) {
+    m_impl->window = window;
+
+    // Propagate to all children
+    for (HItem* child : childItems()) {
+        child->setWindow(window);
+    }
+}
+
+HWindow* HItem::window() const {
+    return m_impl->window;
+}
+
+// Layer-based compositing
+void HItem::setNeedsOwnLayer(bool needs) {
+    m_impl->needsOwnLayer = needs;
+    if (!needs) {
+        m_impl->layer.reset();
+        m_impl->layerValid = false;
+    }
+}
+
+bool HItem::needsOwnLayer() const {
+    return m_impl->needsOwnLayer;
+}
+
+void HItem::invalidateLayer() {
+    m_impl->layerValid = false;
+    m_impl->layer.reset();
+}
+
+bool HItem::hasValidLayer() const {
+    return m_impl->layerValid && m_impl->layer != nullptr;
 }
 
 } // namespace Ht

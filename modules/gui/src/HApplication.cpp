@@ -249,6 +249,15 @@ static void pointer_handle_button(void* data,
         } else {
              std::cout << "No MouseArea found at " << x << "," << y << std::endl;
         }
+
+        // Set focus to the clicked item (if press event)
+        if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+            HItem* clickedItem = HWindow::findItemAt(winImpl->centralItem, x, y);
+            if (clickedItem && clickedItem != winImpl->centralItem) {
+                std::cout << "Setting focus to clicked item" << std::endl;
+                impl->primaryWindow->setFocusItem(clickedItem);
+            }
+        }
     }
 
     // If not handled by a mouse area and it's a press, handle window drag/resize

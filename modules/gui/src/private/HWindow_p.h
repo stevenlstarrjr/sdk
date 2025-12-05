@@ -6,6 +6,10 @@
 #include "HColor.h"
 #include "HPen.h"
 #include "HRect.h"
+#include "HEventDispatcher.h"
+#include "HSceneGraph.h"
+#include "HRenderManager.h"
+#include <memory>
 
 #include <vector>
 
@@ -62,7 +66,19 @@ struct HWindow::Impl {
     int paddingBottom = 0;
 
     // Input focus
-    HItem* focusItem = nullptr;
+    // HItem* focusItem = nullptr; // Moved to HEventDispatcher
+
+    // Internal components
+    std::unique_ptr<HEventDispatcher> eventDispatcher;
+    std::unique_ptr<HSceneGraph> sceneGraph;
+    std::unique_ptr<HRenderManager> renderManager;
+
+    // Persistent framebuffer for partial updates
+    std::unique_ptr<class HImage> framebuffer;
+    std::unique_ptr<class HImage> oldFramebuffer; // For smart resize
+    bool needsFullRepaint = true;
+    int prevWidth = 0;
+    int prevHeight = 0;
 };
 
 } // namespace Ht

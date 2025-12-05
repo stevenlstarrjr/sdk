@@ -176,6 +176,14 @@ public:
     // Picture rendering
     void drawPicture(const HPicture& picture, const HPointF& offset = HPointF(0.0f, 0.0f));
 
+    // Image rendering
+    void drawImage(const HPoint& point, const HImage& image);
+    void drawImage(const HPointF& point, const HImage& image);
+    void drawImage(int x, int y, const HImage& image);
+    void drawImage(float x, float y, const HImage& image);
+    void drawImage(const HRect& target, const HImage& image);
+    void drawImage(const HRectF& target, const HImage& image);
+
     // Text measurement (using current font)
     float textWidth(const std::string& text) const;
     HRectF textBoundingRect(const std::string& text) const;

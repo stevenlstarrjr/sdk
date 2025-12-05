@@ -118,12 +118,27 @@ public:
     void show();
     void hide();
 
+    // -- Dirty Flag --
+    void update();
+    bool isDirty() const;
+    void clearDirty();
+
     // -- Internal --
     struct Impl;
     Impl* impl() const { return m_impl.get(); }
 
     // Sync Yoga layout results to internal geometry
     void updateLayout();
+
+    // Window reference (for dirty propagation)
+    void setWindow(class HWindow* window);
+    class HWindow* window() const;
+
+    // Layer-based compositing
+    void setNeedsOwnLayer(bool needs);
+    bool needsOwnLayer() const;
+    void invalidateLayer();
+    bool hasValidLayer() const;
 
 protected:
     std::unique_ptr<Impl> m_impl;

@@ -76,18 +76,21 @@ static void get_total_margins(HWindow::Impl* impl, int& left, int& top, int& rig
 
 // Internal helper: render current window contents and commit to Wayland.
 static void render_frame(HWindow::Impl* impl) {
-    std::cout << "render_frame: Start" << std::endl;
     if (!impl || !impl->surface || !impl->app || !impl->app->impl()->display) {
         return;
     }
 
     // Ensure layout is up-to-date before rendering
     if (impl->centralItem) {
-        // We assume layout was updated during configure or resize.
-        // But if content changed dynamically, we might need to trigger it here.
-        // For now, let's trust the event loop or explicit update() calls.
-    }
+        // Calculate Yoga layout for the entire tree
+        YGNodeCalculateLayout(impl->centralItem->impl()->yogaNode,
+                              static_cast<float>(impl->width),
+                              static_cast<float>(impl->height),
+                              YGDirectionLTR);
 
+        // Sync Yoga results to HItem geometry
+        impl->centralItem->updateLayout();
+    }
 
     const int w = impl->width;
     const int h = impl->height;
@@ -96,22 +99,36 @@ static void render_frame(HWindow::Impl* impl) {
         return;
     }
 
-    // 1) Render the window contents using graphics2d (HPainter + HImage).
-    HImage image(w, h, HImage::Format::ARGB32_Premul);
-    {
-        HPainter painter(&image);
-        painter.setAntialiasing(true);
+    // Check if we need full repaint or can do partial update
+    bool sizeChanged = !impl->framebuffer ||
+                       impl->framebuffer->width() != w ||
+                       impl->framebuffer->height() != h;
+    bool doFullRepaint = impl->needsFullRepaint;
+    bool doSmartResize = sizeChanged && !doFullRepaint && impl->framebuffer;
 
-        // Start with transparent background.
-        image.fill(HColor::Transparent());
+    // Determine dirty regions for Wayland damage reporting
+    std::vector<HRect> damageRegions;
 
-        // If custom paint callback is set, use it instead of default rendering
-        if (impl->paintCallback) {
-            impl->paintCallback(painter, w, h);
-        } else {
-            // Default rendering: draw styled window with optional drop shadow
+    if (doSmartResize) {
+        std::cout << "========================================" << std::endl;
+        std::cout << "render_frame: SMART RESIZE (" << impl->prevWidth << "x" << impl->prevHeight
+                  << " → " << w << "x" << h << ")" << std::endl;
+        std::cout << "========================================" << std::endl;
 
-            // Calculate margins needed for drop shadow visibility + content margins
+        // Preserve old framebuffer
+        impl->oldFramebuffer = std::move(impl->framebuffer);
+
+        // Allocate new framebuffer
+        impl->framebuffer = std::make_unique<HImage>(w, h, HImage::Format::ARGB32_Premul);
+
+        {
+            HPainter painter(impl->framebuffer.get());
+            painter.setAntialiasing(true);
+
+            // Start with transparent background
+            impl->framebuffer->fill(HColor::Transparent());
+
+            // Paint window background and shadow (these always change on resize)
             int iml, imt, imr, imb;
             get_total_margins(impl, iml, imt, imr, imb);
             float marginLeft = static_cast<float>(iml);
@@ -120,7 +137,7 @@ static void render_frame(HWindow::Impl* impl) {
             float marginBottom = static_cast<float>(imb);
 
             if (impl->dropShadowEnabled) {
-                // Draw shadow behind the main window rect with blur
+                std::cout << "  [PAINTING] Window drop shadow (size changed)" << std::endl;
                 HRectF shadowRect(
                     marginLeft + impl->dropShadowOffsetX,
                     marginTop + impl->dropShadowOffsetY,
@@ -128,23 +145,18 @@ static void render_frame(HWindow::Impl* impl) {
                     static_cast<float>(h) - marginTop - marginBottom
                 );
 
-                // Enable blur for shadow
                 painter.setBlurRadius(impl->dropShadowBlurRadius);
                 painter.setBlurEnabled(true);
-
                 painter.setPen(HPen(HPen::Style::NoPen));
                 painter.setBrush(impl->dropShadowColor);
                 painter.drawRoundedRect(shadowRect, impl->borderRadius, impl->borderRadius);
-
-                // Disable blur for main window drawing
                 painter.setBlurEnabled(false);
             }
 
-            // Draw main rounded rectangle with margins to show shadow
-            // Note: We use shadow margins ONLY for the background rect, so padding is drawn inside the window.
             int sml, smt, smr, smb;
             get_shadow_margins(impl, sml, smt, smr, smb);
-            
+
+            std::cout << "  [PAINTING] Window rounded rect (size changed)" << std::endl;
             HRectF windowRect(
                 static_cast<float>(sml),
                 static_cast<float>(smt),
@@ -155,26 +167,215 @@ static void render_frame(HWindow::Impl* impl) {
             painter.setPen(impl->borderPen);
             painter.setBrush(impl->backgroundColor);
             painter.drawRoundedRect(windowRect, impl->borderRadius, impl->borderRadius);
+
+            // Now handle child items intelligently - copy unchanged, repaint dirty
+            std::cout << "  [SMART COPY] Preserving unchanged child items from old buffer:" << std::endl;
+
+            // Helper: recursively copy/repaint items
+            std::function<void(HItem*, int, int)> copyOrRepaintItems = [&](HItem* item, int offsetX, int offsetY) {
+                if (!item || !item->isVisible()) return;
+
+                const int absX = offsetX + item->x();
+                const int absY = offsetY + item->y();
+                const int itemW = item->width();
+                const int itemH = item->height();
+
+                // Check if this item needs repainting
+                if (item->isDirty()) {
+                    std::cout << "    → Repainting dirty item at (" << absX << "," << absY
+                              << ") size " << itemW << "x" << itemH << std::endl;
+
+                    painter.save();
+                    painter.translate(static_cast<float>(absX), static_cast<float>(absY));
+                    item->paintContent(painter);
+                    painter.restore();
+                    item->clearDirty();
+                } else if (impl->oldFramebuffer &&
+                           absX >= 0 && absY >= 0 &&
+                           absX + itemW <= impl->oldFramebuffer->width() &&
+                           absY + itemH <= impl->oldFramebuffer->height()) {
+
+                    std::cout << "    → Copying clean item from old buffer at (" << absX << "," << absY
+                              << ") size " << itemW << "x" << itemH << std::endl;
+
+                    // Copy pixels from old framebuffer
+                    const uint8_t* oldBits = static_cast<const uint8_t*>(impl->oldFramebuffer->constBits());
+                    uint8_t* newBits = static_cast<uint8_t*>(impl->framebuffer->bits());
+                    const int oldStride = impl->oldFramebuffer->bytesPerLine();
+                    const int newStride = impl->framebuffer->bytesPerLine();
+                    const int bytesPerPixel = 4; // ARGB32
+
+                    for (int y = 0; y < itemH; ++y) {
+                        const int srcY = absY + y;
+                        const int dstY = absY + y;
+
+                        if (srcY < 0 || srcY >= impl->oldFramebuffer->height() ||
+                            dstY < 0 || dstY >= h) continue;
+
+                        const uint8_t* srcRow = oldBits + srcY * oldStride + absX * bytesPerPixel;
+                        uint8_t* dstRow = newBits + dstY * newStride + absX * bytesPerPixel;
+
+                        std::memcpy(dstRow, srcRow, itemW * bytesPerPixel);
+                    }
+                } else {
+                    std::cout << "    → Repainting item (out of old bounds) at (" << absX << "," << absY
+                              << ") size " << itemW << "x" << itemH << std::endl;
+
+                    painter.save();
+                    painter.translate(static_cast<float>(absX), static_cast<float>(absY));
+                    item->paintContent(painter);
+                    painter.restore();
+                }
+
+                // Process children
+                for (HItem* child : item->childItems()) {
+                    copyOrRepaintItems(child, absX, absY);
+                }
+            };
+
+            if (impl->centralItem) {
+                copyOrRepaintItems(impl->centralItem, 0, 0);
+            }
         }
 
-        // Paint the central item tree if set
-        if (impl->centralItem && impl->centralItem->isVisible()) {
-            painter.save();
-            // Translate to central item's position (which includes margins)
-            painter.translate(static_cast<float>(impl->centralItem->x()), 
-                              static_cast<float>(impl->centralItem->y()));
-            impl->centralItem->paint(painter);
-            painter.restore();
+        // Release old framebuffer
+        impl->oldFramebuffer.reset();
+
+        // Full window damage for now (could optimize to only new areas)
+        damageRegions.push_back(HRect(0, 0, w, h));
+        impl->prevWidth = w;
+        impl->prevHeight = h;
+
+        if (impl->renderManager) {
+            impl->renderManager->clearDirtyRegions();
+        }
+        std::cout << "========================================" << std::endl;
+    } else if (doFullRepaint || sizeChanged) {
+        std::cout << "========================================" << std::endl;
+        std::cout << "render_frame: FULL REPAINT" << std::endl;
+        std::cout << "========================================" << std::endl;
+
+        // Allocate or reallocate framebuffer
+        impl->framebuffer = std::make_unique<HImage>(w, h, HImage::Format::ARGB32_Premul);
+        impl->prevWidth = w;
+        impl->prevHeight = h;
+
+        {
+            HPainter painter(impl->framebuffer.get());
+            painter.setAntialiasing(true);
+
+            // Start with transparent background
+            impl->framebuffer->fill(HColor::Transparent());
+
+            // If custom paint callback is set, use it instead of default rendering
+            if (impl->paintCallback) {
+                std::cout << "  [PAINTING] Custom paint callback" << std::endl;
+                impl->paintCallback(painter, w, h);
+            } else {
+                // Default rendering: draw styled window with optional drop shadow
+                int iml, imt, imr, imb;
+                get_total_margins(impl, iml, imt, imr, imb);
+                float marginLeft = static_cast<float>(iml);
+                float marginTop = static_cast<float>(imt);
+                float marginRight = static_cast<float>(imr);
+                float marginBottom = static_cast<float>(imb);
+
+                if (impl->dropShadowEnabled) {
+                    std::cout << "  [PAINTING] Window drop shadow at ("
+                              << (marginLeft + impl->dropShadowOffsetX) << ","
+                              << (marginTop + impl->dropShadowOffsetY) << ")" << std::endl;
+
+                    HRectF shadowRect(
+                        marginLeft + impl->dropShadowOffsetX,
+                        marginTop + impl->dropShadowOffsetY,
+                        static_cast<float>(w) - marginLeft - marginRight,
+                        static_cast<float>(h) - marginTop - marginBottom
+                    );
+
+                    painter.setBlurRadius(impl->dropShadowBlurRadius);
+                    painter.setBlurEnabled(true);
+                    painter.setPen(HPen(HPen::Style::NoPen));
+                    painter.setBrush(impl->dropShadowColor);
+                    painter.drawRoundedRect(shadowRect, impl->borderRadius, impl->borderRadius);
+                    painter.setBlurEnabled(false);
+                } else {
+                    std::cout << "  [SKIPPED] Window drop shadow (disabled)" << std::endl;
+                }
+
+                int sml, smt, smr, smb;
+                get_shadow_margins(impl, sml, smt, smr, smb);
+
+                std::cout << "  [PAINTING] Window rounded rect at (" << sml << "," << smt << ") "
+                          << "size " << (w - sml - smr) << "x" << (h - smt - smb)
+                          << " radius=" << impl->borderRadius << std::endl;
+
+                HRectF windowRect(
+                    static_cast<float>(sml),
+                    static_cast<float>(smt),
+                    static_cast<float>(w) - static_cast<float>(sml) - static_cast<float>(smr),
+                    static_cast<float>(h) - static_cast<float>(smt) - static_cast<float>(smb)
+                );
+
+                painter.setPen(impl->borderPen);
+                painter.setBrush(impl->backgroundColor);
+                painter.drawRoundedRect(windowRect, impl->borderRadius, impl->borderRadius);
+            }
+
+            std::cout << "  [PAINTING] Child items (via RenderManager)" << std::endl;
+            // Paint the scene via RenderManager
+            if (impl->renderManager) {
+                impl->renderManager->render(painter);
+            }
         }
 
-        // HPainter destructor will call end() and update the image.
+        // Full window damage
+        damageRegions.push_back(HRect(0, 0, w, h));
+        impl->needsFullRepaint = false;
+
+        if (impl->renderManager) {
+            impl->renderManager->clearDirtyRegions();
+        }
+        std::cout << "========================================" << std::endl;
+    } else if (impl->renderManager && impl->renderManager->hasDirtyRegions()) {
+        std::cout << "========================================" << std::endl;
+        std::cout << "render_frame: PARTIAL UPDATE" << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << "  [SKIPPED] Window drop shadow (not dirty)" << std::endl;
+        std::cout << "  [SKIPPED] Window rounded rect (not dirty)" << std::endl;
+
+        // Get dirty regions from render manager
+        const auto& dirtyRects = impl->renderManager->dirtyRegions();
+        damageRegions = dirtyRects;
+
+        {
+            HPainter painter(impl->framebuffer.get());
+            painter.setAntialiasing(true);
+
+            std::cout << "  [PAINTING] Only dirty child items:" << std::endl;
+            // Only repaint dirty regions
+            // Note: For simplicity, we still render the full scene but could optimize further
+            if (impl->renderManager) {
+                impl->renderManager->render(painter);
+            }
+        }
+
+        impl->renderManager->clearDirtyRegions();
+        std::cout << "========================================" << std::endl;
+    } else {
+        std::cout << "========================================" << std::endl;
+        std::cout << "render_frame: NO CHANGES, SKIPPING" << std::endl;
+        std::cout << "  [SKIPPED] Window drop shadow" << std::endl;
+        std::cout << "  [SKIPPED] Window rounded rect" << std::endl;
+        std::cout << "  [SKIPPED] All child items" << std::endl;
+        std::cout << "========================================" << std::endl;
+        return; // Nothing to update
     }
 
-    // 2) Copy the rendered image into a shared memory buffer for Wayland.
+    // Copy framebuffer to Wayland shared memory
     HShmBuffer buffer(impl->app, w, h);
 
-    const uint8_t* src = static_cast<const uint8_t*>(image.constBits());
-    const int srcStride = image.bytesPerLine();
+    const uint8_t* src = static_cast<const uint8_t*>(impl->framebuffer->constBits());
+    const int srcStride = impl->framebuffer->bytesPerLine();
     uint8_t* dst = static_cast<uint8_t*>(buffer.data());
     const int dstStride = buffer.stride();
 
@@ -187,7 +388,15 @@ static void render_frame(HWindow::Impl* impl) {
 
     wl_buffer* wlBuf = static_cast<wl_buffer*>(buffer.wlBuffer());
     wl_surface_attach(impl->surface, wlBuf, 0, 0);
-    wl_surface_damage_buffer(impl->surface, 0, 0, w, h);
+
+    // Report only dirty regions to Wayland compositor
+    std::cout << "  [WAYLAND] Reporting " << damageRegions.size() << " damage region(s):" << std::endl;
+    for (const HRect& rect : damageRegions) {
+        std::cout << "    → Damage: (" << rect.x() << "," << rect.y()
+                  << ") " << rect.width() << "x" << rect.height() << std::endl;
+        wl_surface_damage_buffer(impl->surface, rect.x(), rect.y(), rect.width(), rect.height());
+    }
+
     wl_surface_commit(impl->surface);
     wl_display_flush(impl->app->impl()->display);
 }
@@ -250,6 +459,16 @@ HWindow::HWindow(HApplication* app)
     : m_impl(std::make_unique<Impl>()) {
     m_impl->window = this;
     m_impl->app = app;
+
+    // Initialize internal components
+    m_impl->sceneGraph = std::make_unique<HSceneGraph>();
+    m_impl->renderManager = std::make_unique<HRenderManager>();
+    m_impl->eventDispatcher = std::make_unique<HEventDispatcher>();
+
+    // Wire them up
+    m_impl->renderManager->setSceneGraph(m_impl->sceneGraph.get());
+    m_impl->eventDispatcher->setSceneGraph(m_impl->sceneGraph.get());
+    m_impl->eventDispatcher->setWindow(this);
     if (!app || !app->impl() || !app->impl()->compositor) {
         throw std::runtime_error("HWindow requires a connected HApplication with wl_compositor");
     }
@@ -335,10 +554,7 @@ void HWindow::resize(int width, int height) {
 
     m_impl->width = width;
     m_impl->height = height;
-
-    // Update central item layout
-    // Update central item layout
-    // Layout update removed
+    m_impl->needsFullRepaint = true;
 
     if (m_impl->visible) {
         render_frame(m_impl.get());
@@ -371,6 +587,7 @@ void HWindow::update() {
 
 void HWindow::setBorderRadius(float radius) {
     m_impl->borderRadius = radius;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -382,6 +599,7 @@ float HWindow::borderRadius() const {
 
 void HWindow::setBorderPen(const HPen& pen) {
     m_impl->borderPen = pen;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -393,6 +611,7 @@ const HPen& HWindow::borderPen() const {
 
 void HWindow::setBackgroundColor(const HColor& color) {
     m_impl->backgroundColor = color;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -406,6 +625,7 @@ const HColor& HWindow::backgroundColor() const {
 
 void HWindow::setDropShadowEnabled(bool enabled) {
     m_impl->dropShadowEnabled = enabled;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -418,6 +638,7 @@ bool HWindow::dropShadowEnabled() const {
 void HWindow::setDropShadowOffset(float x, float y) {
     m_impl->dropShadowOffsetX = x;
     m_impl->dropShadowOffsetY = y;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -433,6 +654,7 @@ float HWindow::dropShadowOffsetY() const {
 
 void HWindow::setDropShadowBlurRadius(float radius) {
     m_impl->dropShadowBlurRadius = radius;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -444,6 +666,7 @@ float HWindow::dropShadowBlurRadius() const {
 
 void HWindow::setDropShadowColor(const HColor& color) {
     m_impl->dropShadowColor = color;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -457,6 +680,7 @@ const HColor& HWindow::dropShadowColor() const {
 
 void HWindow::setPaintCallback(PaintCallback callback) {
     m_impl->paintCallback = std::move(callback);
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -464,6 +688,7 @@ void HWindow::setPaintCallback(PaintCallback callback) {
 
 void HWindow::clearPaintCallback() {
     m_impl->paintCallback = nullptr;
+    m_impl->needsFullRepaint = true;
     if (m_impl->visible) {
         render_frame(m_impl.get());
     }
@@ -488,8 +713,36 @@ void HWindow::clearDraggableRegions() {
 
 void HWindow::setContent(HItem* item) {
     m_impl->centralItem = item;
+    if (m_impl->sceneGraph) {
+        m_impl->sceneGraph->setRootItem(item);
+    }
+
+    // Set window reference on all items for dirty propagation
+    if (item) {
+        item->setWindow(this);
+    }
+
     if (m_impl->visible) {
         render_frame(m_impl.get());
+    }
+}
+
+// Helper function for dirty notification (called by HItem::update())
+void notifyItemDirty(HWindow* window, const HRect& dirtyRect) {
+    if (!window || !window->impl()) {
+        return;
+    }
+
+    auto* impl = window->impl();
+
+    // Mark the region as dirty in render manager
+    if (impl->renderManager) {
+        impl->renderManager->markDirty(dirtyRect);
+    }
+
+    // Schedule a repaint if window is visible
+    if (impl->visible) {
+        window->update();
     }
 }
 
@@ -535,6 +788,38 @@ HMouseArea* HWindow::findMouseAreaAt(HItem* item, int x, int y) {
     return findMouseAreaAtOffset(item, x, y, 0, 0);
 }
 
+// Helper to find any HItem at position (for focus management)
+static HItem* findItemAtOffset(HItem* item, int x, int y, int offsetX, int offsetY) {
+    if (!item || !item->isVisible()) {
+        return nullptr;
+    }
+
+    // Calculate absolute item bounds
+    const int absX = offsetX + item->x();
+    const int absY = offsetY + item->y();
+    const HRect itemBounds(absX, absY, item->width(), item->height());
+
+    // Check if point is even within this item's bounds first
+    if (!itemBounds.contains(HPoint(x, y))) {
+        return nullptr;
+    }
+
+    // Check children first (they're on top) - pass accumulated offset
+    for (HItem* child : item->childItems()) {
+        HItem* found = findItemAtOffset(child, x, y, absX, absY);
+        if (found) {
+            return found;
+        }
+    }
+
+    // Return this item if it contains the point
+    return item;
+}
+
+HItem* HWindow::findItemAt(HItem* item, int x, int y) {
+    return findItemAtOffset(item, x, y, 0, 0);
+}
+
 void HWindow::setPadding(int left, int top, int right, int bottom) {
     m_impl->paddingLeft = left;
     m_impl->paddingTop = top;
@@ -556,37 +841,21 @@ void HWindow::getPadding(int* left, int* top, int* right, int* bottom) const {
 }
 
 void HWindow::setFocusItem(HItem* item) {
-    std::cout << "HWindow::setFocusItem() item=" << item << " current=" << m_impl->focusItem << std::endl;
-    if (m_impl->focusItem == item) return;
-
-    if (m_impl->focusItem) {
-        std::cout << "HWindow::setFocusItem() removing focus from old item" << std::endl;
-        m_impl->focusItem->setFocus(false);
-    }
-
-    m_impl->focusItem = item;
-
-    if (m_impl->focusItem) {
-        std::cout << "HWindow::setFocusItem() setting focus on new item" << std::endl;
-        m_impl->focusItem->setFocus(true);
+    if (m_impl->eventDispatcher) {
+        m_impl->eventDispatcher->setFocusItem(item);
     }
 }
 
 HItem* HWindow::focusItem() const {
-    return m_impl->focusItem;
+    if (m_impl->eventDispatcher) {
+        return m_impl->eventDispatcher->focusItem();
+    }
+    return nullptr;
 }
 
 void HWindow::dispatchKeyEvent(HKeyEvent& event) {
-    std::cout << "HWindow::dispatchKeyEvent() focusItem=" << m_impl->focusItem << " key=" << (int)event.key << " pressed=" << event.pressed << std::endl;
-    if (m_impl->focusItem) {
-        if (event.pressed) {
-            std::cout << "HWindow::dispatchKeyEvent() calling onKeyPress on focusItem" << std::endl;
-            m_impl->focusItem->onKeyPress(event);
-        } else {
-            m_impl->focusItem->onKeyRelease(event);
-        }
-    } else {
-        std::cout << "HWindow::dispatchKeyEvent() no focus item!" << std::endl;
+    if (m_impl->eventDispatcher) {
+        m_impl->eventDispatcher->dispatchKeyEvent(event);
     }
 }
 
